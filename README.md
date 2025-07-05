@@ -1,6 +1,7 @@
 - needs ws node module, ngrok, coturn.
 - setup ngrok(details on ngrok's website)  
-- to setup coturn  
+- install coturn  
+   to setup coturn  
 create file turnserver.conf->  
 ```
 listening-port=3478  
