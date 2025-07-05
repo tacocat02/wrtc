@@ -3,20 +3,34 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 
+const SIGNALING_URL = process.env.SIGNALING_URL || 'ws://localhost:3000';
+
 const server = http.createServer((req, res) => {
   let filePath = req.url === '/' ? '/index.html' : req.url;
-  filePath = path.join(__dirname, 'public', filePath);
 
+  if (filePath === '/index.html') {
+    fs.readFile(path.join(__dirname, 'public/template.html'), 'utf8', (err, data) => {
+      if (err) {
+        res.writeHead(500);
+        return res.end('Error loading template');
+      }
+      const rendered = data.replace('{{SIGNALING_URL}}', `"${SIGNALING_URL}"`);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      return res.end(rendered);
+    });
+    return;
+  }
+
+  // Static files
+  filePath = path.join(__dirname, 'public', filePath);
   fs.readFile(filePath, (err, content) => {
     if (err) {
       res.writeHead(404);
-      res.end('File not found');
-      return;
+      return res.end('File not found');
     }
 
     let contentType = 'text/plain';
-    if (filePath.endsWith('.html')) contentType = 'text/html';
-    else if (filePath.endsWith('.js')) contentType = 'application/javascript';
+    if (filePath.endsWith('.js')) contentType = 'application/javascript';
     else if (filePath.endsWith('.css')) contentType = 'text/css';
 
     res.writeHead(200, { 'Content-Type': contentType });
