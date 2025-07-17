@@ -2,45 +2,46 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>WebRTC Chat</title>
+  <title>AirTalk</title>
   <style>
-    body { font-family: sans-serif; max-width: 600px; margin: auto; }
-    #chat { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; }
+    body { font-family: sans-serif; max-width: 700px; margin: auto; }
+    #chatTabs { display: flex; border-bottom: 1px solid #ccc; }
+    .tab { padding: 8px; cursor: pointer; border: 1px solid #ccc; margin-right: 4px; border-bottom: none; }
+    .tab.active { background: #eee; font-weight: bold; }
+    .chatWindow { display: none; height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; }
+    .chatWindow.active { display: block; }
     #input { width: 100%; margin-top: 10px; padding: 8px; }
     #users { margin: 10px 0; }
-    button { margin: 2px 0; }
   </style>
 </head>
 <body>
-  <h2>WebRTC Peer-to-Peer Chat</h2>
+  <h2>AirTalk</h2>
   <input id="usernameInput" placeholder="Your name" />
   <button id="connectBtn">Connect</button>
   <div id="users"></div>
-  <div id="chat"></div>
+
+  <div id="chatTabs"></div>
+  <div id="chatContainers"></div>
   <input id="input" placeholder="Type a message..." disabled />
 
   <script>
-    const serverURL = {{SIGNALING_URL}}; // gets injected by server.js
-
+    const serverURL = {{SIGNALING_URL}};
     const usernameInput = document.getElementById('usernameInput');
     const connectBtn = document.getElementById('connectBtn');
     const usersDiv = document.getElementById('users');
-    const chat = document.getElementById('chat');
+    const chatTabs = document.getElementById('chatTabs');
+    const chatContainers = document.getElementById('chatContainers');
     const input = document.getElementById('input');
 
     let username = '';
-    let target = '';
     let socket = null;
-    let peer = null;
-    let dataChannel = null;
+    const peers = {}; // peer connections per user
+    const dataChannels = {}; // data channels per user
+    let currentChat = null;
 
     connectBtn.onclick = () => {
       username = usernameInput.value.trim();
       if (!username) return alert("Enter a username");
-
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.close();
-      }
 
       socket = new WebSocket(serverURL);
 
@@ -54,18 +55,15 @@
           case 'user_list':
             updateUserList(msg.users);
             break;
-
           case 'offer':
             await handleOffer(msg.offer, msg.from);
             break;
-
           case 'answer':
-            if (peer) await peer.setRemoteDescription(new RTCSessionDescription(msg.answer));
+            if (peers[msg.from]) await peers[msg.from].setRemoteDescription(new RTCSessionDescription(msg.answer));
             break;
-
           case 'candidate':
-            if (peer && msg.candidate) {
-              await peer.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            if (peers[msg.from] && msg.candidate) {
+              await peers[msg.from].addIceCandidate(new RTCIceCandidate(msg.candidate));
             }
             break;
         }
@@ -73,7 +71,7 @@
     };
 
     function updateUserList(users) {
-      usersDiv.innerHTML = "<b>Online users:</b><br>";
+      usersDiv.innerHTML = '<b>Online users:</b><br>';
       users.filter(u => u !== username).forEach(u => {
         const btn = document.createElement('button');
         btn.textContent = u;
@@ -84,86 +82,100 @@
     }
 
     async function startConnection(to) {
-      target = to;
-      createPeerConnection();
+      createPeerConnection(to);
 
-      dataChannel = peer.createDataChannel("chat");
-      setupDataChannel();
+      dataChannels[to] = peers[to].createDataChannel("chat");
+      setupDataChannel(to);
 
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
+      const offer = await peers[to].createOffer();
+      await peers[to].setLocalDescription(offer);
       socket.send(JSON.stringify({ type: 'offer', to, offer }));
     }
 
     async function handleOffer(offer, from) {
-      target = from;
-      createPeerConnection();
+      createPeerConnection(from);
 
-      peer.ondatachannel = (e) => {
-        dataChannel = e.channel;
-        setupDataChannel();
+      peers[from].ondatachannel = e => {
+        dataChannels[from] = e.channel;
+        setupDataChannel(from);
       };
 
-      await peer.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await peer.createAnswer();
-      await peer.setLocalDescription(answer);
+      await peers[from].setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await peers[from].createAnswer();
+      await peers[from].setLocalDescription(answer);
       socket.send(JSON.stringify({ type: 'answer', to: from, answer }));
     }
 
-    function createPeerConnection() {
-      if (peer) peer.close();
+    function createPeerConnection(user) {
+      if (peers[user]) peers[user].close();
 
-      peer = new RTCPeerConnection({
+      peers[user] = new RTCPeerConnection({
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
           {
-            urls: "turn:192.168.18.13:3478", // your local TURN server IP
+            urls: "turn:192.168.18.13:3478",
             username: "webrtcuser",
             credential: "webrtcpass"
           }
         ]
       });
 
-      peer.onicecandidate = ({ candidate }) => {
+      peers[user].onicecandidate = ({ candidate }) => {
         if (candidate) {
-          socket.send(JSON.stringify({ type: 'candidate', to: target, candidate }));
-        }
-      };
-
-      peer.onconnectionstatechange = () => {
-        if (peer.connectionState === "connected") {
-          log("✅ Peer connection established");
-        } else if (["disconnected", "failed", "closed"].includes(peer.connectionState)) {
-          input.disabled = true;
-          log('⚠️ Connection lost');
+          socket.send(JSON.stringify({ type: 'candidate', to: user, candidate }));
         }
       };
     }
 
-    function setupDataChannel() {
-      dataChannel.onopen = () => {
-        log("✅ DataChannel open");
+    function setupDataChannel(user) {
+      dataChannels[user].onopen = () => {
+        createChatTab(user);
         input.disabled = false;
       };
-      dataChannel.onmessage = (e) => log(`${target}: ${e.data}`);
-      dataChannel.onclose = () => log('❌ DataChannel closed');
-      dataChannel.onerror = (e) => console.error('DataChannel error:', e);
+      dataChannels[user].onmessage = e => appendMessage(user, `${user}: ${e.data}`);
+      dataChannels[user].onclose = () => appendMessage(user, `${user} disconnected`);
+    }
+
+    function createChatTab(user) {
+      if (document.getElementById(`tab-${user}`)) return;
+
+      const tab = document.createElement('div');
+      tab.className = 'tab';
+      tab.id = `tab-${user}`;
+      tab.textContent = user;
+      tab.onclick = () => switchTab(user);
+      chatTabs.appendChild(tab);
+
+      const chatBox = document.createElement('div');
+      chatBox.className = 'chatWindow';
+      chatBox.id = `chat-${user}`;
+      chatContainers.appendChild(chatBox);
+
+      switchTab(user);
+    }
+
+    function switchTab(user) {
+      currentChat = user;
+      document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+      document.querySelectorAll('.chatWindow').forEach(win => win.classList.remove('active'));
+      document.getElementById(`tab-${user}`).classList.add('active');
+      document.getElementById(`chat-${user}`).classList.add('active');
+    }
+
+    function appendMessage(user, msg) {
+      const div = document.createElement('div');
+      div.textContent = msg;
+      document.getElementById(`chat-${user}`)?.appendChild(div);
     }
 
     input.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && input.value.trim() && dataChannel?.readyState === 'open') {
-        dataChannel.send(input.value.trim());
-        log(`You: ${input.value.trim()}`);
+      if (e.key === 'Enter' && input.value.trim() && dataChannels[currentChat]?.readyState === 'open') {
+        const msg = input.value.trim();
+        dataChannels[currentChat].send(msg);
+        appendMessage(currentChat, `You: ${msg}`);
         input.value = '';
       }
     });
-
-    function log(msg) {
-      const div = document.createElement('div');
-      div.textContent = msg;
-      chat.appendChild(div);
-      chat.scrollTop = chat.scrollHeight;
-    }
   </script>
 </body>
 </html>
